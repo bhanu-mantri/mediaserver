@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media Server Design</title>
+<meta name="description" content="Illustrated system design of the home media server: Seerr, Jellyfin, Radarr, Sonarr, Prowlarr and qBittorrent behind Surfshark.">
+<style>
+  :root {
+    --bg: #f6f5f1;
+    --surface: #ffffff;
+    --surface-2: #efede6;
+    --text: #1d1d1b;
+    --muted: #5f5e58;
+    --line: #c9c6bb;
+    --accent: #4f46e5;      /* request / control flow */
+    --accent-soft: #e6e4fb;
+    --vpn: #0f8a6a;         /* everything that goes through Surfshark */
+    --vpn-soft: #dcf1ea;
+    --data: #b85c00;        /* files on disk */
+    --data-soft: #f8e9d8;
+    --watch: #c02666;       /* playback */
+    --watch-soft: #f8e0ea;
+    --warn: #9a6700;
+    --warn-soft: #fbf0d0;
+    --code-bg: #efede6;
+    --radius: 12px;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141413;
+      --surface: #1d1d1b;
+      --surface-2: #262623;
+      --text: #ecebe6;
+      --muted: #a6a49b;
+      --line: #45443f;
+      --accent: #8f88ff;
+      --accent-soft: #2a2850;
+      --vpn: #3ccfa4;
+      --vpn-soft: #12332a;
+      --data: #f0a050;
+      --data-soft: #3a2a17;
+      --watch: #f06a9f;
+      --watch-soft: #3d1a29;
+      --warn: #e6b84a;
+      --warn-soft: #362c12;
+      --code-bg: #262623;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141413;
+    --surface: #1d1d1b;
+    --surface-2: #262623;
+    --text: #ecebe6;
+    --muted: #a6a49b;
+    --line: #45443f;
+    --accent: #8f88ff;
+    --accent-soft: #2a2850;
+    --vpn: #3ccfa4;
+    --vpn-soft: #12332a;
+    --data: #f0a050;
+    --data-soft: #3a2a17;
+    --watch: #f06a9f;
+    --watch-soft: #3d1a29;
+    --warn: #e6b84a;
+    --warn-soft: #362c12;
+    --code-bg: #262623;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 32px 16px 80px; }
+  header.hero { padding: 24px 0 8px; }
+  .eyebrow { color: var(--muted); font-size: 13px; letter-spacing: .08em; text-transform: uppercase; margin: 0 0 6px; }
+  h1 { font-size: clamp(28px, 5vw, 42px); line-height: 1.15; margin: 0 0 12px; letter-spacing: -.01em; }
+  h2 { font-size: 24px; margin: 56px 0 6px; letter-spacing: -.005em; }
+  h3 { font-size: 17px; margin: 0 0 6px; }
+  p.lead { font-size: 18px; color: var(--muted); max-width: 70ch; margin: 0; }
+  .section-intro { color: var(--muted); margin: 0 0 18px; max-width: 72ch; }
+  code, kbd { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .9em; background: var(--code-bg); padding: 1px 6px; border-radius: 6px; }
+  pre { background: var(--code-bg); padding: 14px 16px; border-radius: var(--radius); overflow-x: auto; font-size: 14px; line-height: 1.5; margin: 0; }
+  pre code { background: none; padding: 0; }
+  a { color: var(--accent); }
+
+  nav.toc { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 0; padding: 0; list-style: none; }
+  nav.toc a { display: inline-block; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; text-decoration: none; color: var(--text); font-size: 14px; background: var(--surface); }
+  nav.toc a:hover { border-color: var(--accent); color: var(--accent); }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+  .figure { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; overflow-x: auto; }
+  .figure svg { display: block; width: 100%; min-width: 720px; height: auto; }
+  .caption { color: var(--muted); font-size: 14px; margin: 10px 4px 0; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 12px 4px 0; font-size: 14px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 22px; height: 0; border-top: 3px solid; display: inline-block; }
+  .swatch.dash { border-top-style: dashed; }
+
+  /* SVG styling via tokens */
+  svg text { fill: var(--text); font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  svg .t-sm { font-size: 12px; fill: var(--muted); }
+  svg .t-md { font-size: 14px; font-weight: 600; }
+  svg .t-lbl { font-size: 11.5px; fill: var(--muted); }
+  svg .node { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; }
+  svg .node.req { fill: var(--accent-soft); stroke: var(--accent); }
+  svg .node.vpn { fill: var(--vpn-soft); stroke: var(--vpn); }
+  svg .node.data { fill: var(--data-soft); stroke: var(--data); }
+  svg .node.watch { fill: var(--watch-soft); stroke: var(--watch); }
+  svg .region { fill: none; stroke: var(--vpn); stroke-width: 1.5; stroke-dasharray: 6 5; }
+  svg .region-fill { fill: var(--vpn-soft); opacity: .45; }
+  svg .edge { fill: none; stroke-width: 2; }
+  svg .e-req { stroke: var(--accent); }
+  svg .e-vpn { stroke: var(--vpn); }
+  svg .e-data { stroke: var(--data); }
+  svg .e-watch { stroke: var(--watch); }
+  svg .e-dash { stroke-dasharray: 5 5; }
+  svg .m-req { fill: var(--accent); }
+  svg .m-vpn { fill: var(--vpn); }
+  svg .m-data { fill: var(--data); }
+  svg .m-watch { fill: var(--watch); }
+  svg .badge circle { fill: var(--text); }
+  svg .badge text { fill: var(--bg); font-size: 11px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+
+  /* Lifecycle steps */
+  ol.steps { list-style: none; counter-reset: s; padding: 0; margin: 0; display: grid; gap: 12px; }
+  ol.steps li { counter-increment: s; display: grid; grid-template-columns: 34px 1fr; gap: 12px; align-items: start; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+  ol.steps li::before { content: counter(s); width: 28px; height: 28px; border-radius: 50%; background: var(--text); color: var(--bg); display: grid; place-items: center; font-weight: 700; font-size: 14px; }
+  ol.steps p { margin: 2px 0 0; color: var(--muted); }
+  .tag { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 999px; margin-left: 6px; vertical-align: 1px; }
+  .tag.req { background: var(--accent-soft); color: var(--accent); }
+  .tag.vpn { background: var(--vpn-soft); color: var(--vpn); }
+  .tag.data { background: var(--data-soft); color: var(--data); }
+  .tag.watch { background: var(--watch-soft); color: var(--watch); }
+
+  /* Network nested boxes */
+  .layer { border: 1.5px solid var(--line); border-radius: var(--radius); padding: 14px; background: var(--surface); }
+  .layer > .layer-title { font-weight: 600; margin: 0 0 4px; }
+  .layer > .layer-sub { color: var(--muted); font-size: 14px; margin: 0 0 12px; }
+  .layer.inner { background: var(--surface-2); }
+  .layer.vpnzone { border-style: dashed; border-color: var(--vpn); background: var(--vpn-soft); }
+  .pods { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  .pod { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .pod b { display: block; font-size: 15px; }
+  .pod small { color: var(--muted); display: block; font-size: 13px; line-height: 1.4; }
+  .pod .port { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--accent); }
+  .net-row { display: grid; grid-template-columns: 1fr; gap: 14px; }
+  @media (min-width: 860px) { .net-row { grid-template-columns: 1fr 260px; } }
+  .tunnel { display: grid; gap: 10px; align-content: start; }
+  .tunnel .hop { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 14px; }
+  .tunnel .hop b { display: block; }
+  .tunnel .arrow { text-align: center; color: var(--vpn); font-size: 18px; line-height: 1; }
+  .tunnel .hop.blocked { border-color: var(--warn); background: var(--warn-soft); }
+
+  /* Storage */
+  .grid-2 { display: grid; grid-template-columns: 1fr; gap: 14px; }
+  @media (min-width: 820px) { .grid-2 { grid-template-columns: 1fr 1fr; } }
+  .tree { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 14px; line-height: 1.75; white-space: pre; overflow-x: auto; }
+  .tree .dl { color: var(--data); }
+  .tree .lib { color: var(--watch); }
+  .tree .cm { color: var(--muted); }
+
+  /* Tables */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; min-width: 640px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--surface-2); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  tr:last-child td { border-bottom: 0; }
+  td code { white-space: nowrap; }
+
+  /* Lessons */
+  .lessons { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  @media (min-width: 820px) { .lessons { grid-template-columns: 1fr 1fr; } }
+  .lesson { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--warn); border-radius: var(--radius); padding: 14px 16px; }
+  .lesson p { margin: 4px 0 0; color: var(--muted); font-size: 15px; }
+  .lesson .fix { color: var(--text); }
+
+  .checks { display: grid; grid-template-columns: 1fr; gap: 10px; }
+  @media (min-width: 820px) { .checks { grid-template-columns: repeat(3, 1fr); } }
+  .check { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+  .check b { display: block; margin-bottom: 2px; }
+  .check p { margin: 0; color: var(--muted); font-size: 14.5px; }
+  .ok { color: var(--vpn); font-weight: 700; }
+
+  .theme-toggle { position: fixed; top: 12px; right: 12px; z-index: 5; border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+  footer { margin-top: 64px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); padding-top: 18px; }
+</style>
+</head>
+<body>
+<button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle light or dark theme">Theme</button>
+<main>
+
+<header class="hero">
+  <p class="eyebrow">mediaserver · system design</p>
+  <h1>How the home media server works</h1>
+  <p class="lead">You search for a title, and it downloads through Surfshark, gets renamed and filed, and appears in Jellyfin ready to watch. This page shows each component, how they connect, where files go, and what was learned while setting it up.</p>
+  <nav class="toc" aria-label="Sections">
+    <a href="#flow">Data flow</a>
+    <a href="#lifecycle">Request lifecycle</a>
+    <a href="#network">Network &amp; VPN</a>
+    <a href="#storage">Storage</a>
+    <a href="#services">Services</a>
+    <a href="#security">Security</a>
+    <a href="#lessons">Lessons learned</a>
+    <a href="#ops">Operations</a>
+  </nav>
+</header>
+
+<!-- ============================ DATA FLOW ============================ -->
+<section id="flow">
+  <h2>Data flow at a glance</h2>
+  <p class="section-intro">Nine containers working together. Purple arrows are requests and control, green is traffic forced through the Surfshark tunnel, orange is files moving on disk, and pink is playback. The numbers match the <a href="#lifecycle">request lifecycle</a> below.</p>
+
+  <div class="figure" role="img" aria-label="Diagram: You request in Seerr, which sends to Radarr or Sonarr; they search via Prowlarr through the VPN, send torrents to qBittorrent inside the gluetun VPN container, import finished files into the media folder, and Jellyfin streams them back to you.">
+    <svg viewBox="0 0 1000 600" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="a-req" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-req" d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="a-vpn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-vpn" d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="a-data" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-data" d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="a-watch" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-watch" d="M0,0 L10,5 L0,10 z"/></marker>
+      </defs>
+
+      <!-- Gluetun region -->
+      <rect class="region-fill" x="540" y="248" width="300" height="200" rx="14"/>
+      <rect class="region" x="540" y="248" width="300" height="200" rx="14"/>
+      <text class="t-lbl" x="552" y="268">gluetun container · Surfshark WireGuard · kill switch</text>
+
+      <!-- Edges (drawn first so nodes sit on top) -->
+      <!-- 1 You -> Seerr -->
+      <path class="edge e-req" d="M120,245 C145,200 140,110 168,96" marker-end="url(#a-req)"/>
+      <!-- 2 Seerr -> Radarr / Sonarr -->
+      <path class="edge e-req" d="M312,84 L368,60" marker-end="url(#a-req)"/>
+      <path class="edge e-req" d="M312,102 L368,130" marker-end="url(#a-req)"/>
+      <!-- 3 Arr -> Prowlarr -->
+      <path class="edge e-req" d="M502,58 C535,60 540,118 568,124" marker-end="url(#a-req)"/>
+      <path class="edge e-req" d="M502,133 L568,133" marker-end="url(#a-req)"/>
+      <!-- 4 Prowlarr -> proxy (VPN) -->
+      <path class="edge e-vpn" d="M635,163 L635,274" marker-end="url(#a-vpn)"/>
+      <!-- tunnel -> Surfshark -->
+      <path class="edge e-vpn" d="M842,348 L868,340" marker-end="url(#a-vpn)"/>
+      <!-- Surfshark -> indexers / swarm -->
+      <path class="edge e-vpn" d="M928,308 L928,166" marker-end="url(#a-vpn)"/>
+      <path class="edge e-vpn" d="M928,372 L928,466" marker-end="url(#a-vpn)"/>
+      <!-- 5 Arr -> qBittorrent (grab) -->
+      <path class="edge e-req" d="M450,162 C455,260 500,350 558,356" marker-end="url(#a-req)"/>
+      <!-- 6 qBittorrent -> /data/torrents -->
+      <path class="edge e-data" d="M610,388 C600,440 560,490 532,505" marker-end="url(#a-data)"/>
+      <!-- 8 /data/media -> Jellyfin -->
+      <path class="edge e-data" d="M330,540 C300,540 270,500 262,468" marker-end="url(#a-data)"/>
+      <!-- Arr -> Jellyfin refresh -->
+      <path class="edge e-req e-dash" d="M400,162 C385,280 320,380 300,398" marker-end="url(#a-req)"/>
+      <!-- Seerr <-> Jellyfin availability -->
+      <path class="edge e-req e-dash" d="M226,126 L226,398" marker-start="url(#a-req)" marker-end="url(#a-req)"/>
+      <!-- 9 Jellyfin -> You (stream) -->
+      <path class="edge e-watch" d="M168,436 C140,420 125,340 92,302" marker-end="url(#a-watch)"/>
+
+      <!-- Nodes -->
+      <rect class="node" x="20" y="232" width="100" height="70" rx="12"/>
+      <text class="t-md" x="70" y="262" text-anchor="middle">You</text>
+      <text class="t-sm" x="70" y="282" text-anchor="middle">browser · TV · phone</text>
+
+      <rect class="node req" x="170" y="62" width="140" height="64" rx="12"/>
+      <text class="t-md" x="240" y="88" text-anchor="middle">Seerr</text>
+      <text class="t-sm" x="240" y="108" text-anchor="middle">search &amp; request :5055</text>
+
+      <rect class="node watch" x="170" y="400" width="140" height="66" rx="12"/>
+      <text class="t-md" x="240" y="427" text-anchor="middle">Jellyfin</text>
+      <text class="t-sm" x="240" y="447" text-anchor="middle">watch :8096</text>
+
+      <rect class="node req" x="370" y="32" width="132" height="54" rx="10"/>
+      <text class="t-md" x="436" y="55" text-anchor="middle">Radarr</text>
+      <text class="t-sm" x="436" y="73" text-anchor="middle">movies :7878</text>
+
+      <rect class="node req" x="370" y="106" width="132" height="54" rx="10"/>
+      <text class="t-md" x="436" y="129" text-anchor="middle">Sonarr</text>
+      <text class="t-sm" x="436" y="147" text-anchor="middle">TV + anime :8989</text>
+
+      <rect class="node req" x="570" y="106" width="132" height="56" rx="10"/>
+      <text class="t-md" x="636" y="130" text-anchor="middle">Prowlarr</text>
+      <text class="t-sm" x="636" y="148" text-anchor="middle">indexers :9696</text>
+
+      <rect class="node vpn" x="558" y="276" width="266" height="34" rx="8"/>
+      <text class="t-sm" x="691" y="298" text-anchor="middle">HTTP proxy :8888 (Prowlarr's searches)</text>
+
+      <rect class="node vpn" x="558" y="326" width="122" height="60" rx="10"/>
+      <text class="t-md" x="619" y="351" text-anchor="middle">qBittorrent</text>
+      <text class="t-sm" x="619" y="370" text-anchor="middle">downloads :8080</text>
+
+      <rect class="node vpn" x="696" y="326" width="128" height="60" rx="10"/>
+      <text class="t-md" x="760" y="351" text-anchor="middle">FlareSolverr</text>
+      <text class="t-sm" x="760" y="370" text-anchor="middle">Cloudflare :8191</text>
+
+      <text class="t-lbl" x="558" y="416">Only route out = tun0. If the VPN drops,</text>
+      <text class="t-lbl" x="558" y="432">these containers have no internet at all.</text>
+
+      <rect class="node vpn" x="870" y="310" width="116" height="60" rx="10"/>
+      <text class="t-md" x="928" y="335" text-anchor="middle">Surfshark</text>
+      <text class="t-sm" x="928" y="354" text-anchor="middle">Amsterdam, NL</text>
+
+      <rect class="node" x="870" y="96" width="116" height="68" rx="10"/>
+      <text class="t-md" x="928" y="122" text-anchor="middle">Indexers</text>
+      <text class="t-sm" x="928" y="141" text-anchor="middle">YTS, 1337x,</text>
+      <text class="t-sm" x="928" y="156" text-anchor="middle">Knaben, Nyaa…</text>
+
+      <rect class="node" x="870" y="468" width="116" height="60" rx="10"/>
+      <text class="t-md" x="928" y="493" text-anchor="middle">Torrent swarm</text>
+      <text class="t-sm" x="928" y="512" text-anchor="middle">peers &amp; seeds</text>
+
+      <rect class="node data" x="330" y="486" width="200" height="94" rx="12"/>
+      <text class="t-md" x="430" y="510" text-anchor="middle">/data (one volume)</text>
+      <text class="t-sm" x="430" y="531" text-anchor="middle">torrents/ ── import ──▶ media/</text>
+      <text class="t-sm" x="430" y="549" text-anchor="middle">copy + rename by the *arr</text>
+      <text class="t-sm" x="430" y="567" text-anchor="middle">C:\…\mediaserver\data</text>
+
+      <!-- Edge labels -->
+      <text class="t-lbl" x="124" y="160">request</text>
+      <text class="t-lbl" x="245" y="236" transform="rotate(90 245 236)">availability</text>
+      <text class="t-lbl" x="508" y="96">search</text>
+      <text class="t-lbl" x="642" y="225">via VPN</text>
+      <text class="t-lbl" x="472" y="300">send torrent</text>
+      <text class="t-lbl" x="586" y="470">save</text>
+      <text class="t-lbl" x="318" y="340">refresh library</text>
+      <text class="t-lbl" x="268" y="510">read</text>
+      <text class="t-lbl" x="96" y="370">stream</text>
+
+      <!-- Step badges -->
+      <g class="badge"><circle cx="143" cy="190" r="10"/><text x="143" y="190">1</text></g>
+      <g class="badge"><circle cx="340" cy="72" r="10"/><text x="340" y="72">2</text></g>
+      <g class="badge"><circle cx="535" cy="133" r="10"/><text x="535" y="133">3</text></g>
+      <g class="badge"><circle cx="618" cy="225" r="10"/><text x="618" y="225">4</text></g>
+      <g class="badge"><circle cx="490" cy="318" r="10"/><text x="490" y="318">5</text></g>
+      <g class="badge"><circle cx="600" cy="456" r="10"/><text x="600" y="456">6</text></g>
+      <g class="badge"><circle cx="430" cy="474" r="10"/><text x="430" y="474">7</text></g>
+      <g class="badge"><circle cx="292" cy="526" r="10"/><text x="292" y="526">8</text></g>
+      <g class="badge"><circle cx="130" cy="392" r="10"/><text x="130" y="392">9</text></g>
+    </svg>
+  </div>
+  <div class="legend">
+    <span><i class="swatch" style="border-color:var(--accent)"></i>request / control</span>
+    <span><i class="swatch dash" style="border-color:var(--accent)"></i>notify / status check</span>
+    <span><i class="swatch" style="border-color:var(--vpn)"></i>through Surfshark</span>
+    <span><i class="swatch" style="border-color:var(--data)"></i>files on disk</span>
+    <span><i class="swatch" style="border-color:var(--watch)"></i>playback</span>
+  </div>
+</section>
+
+<!-- ============================ LIFECYCLE ============================ -->
+<section id="lifecycle">
+  <h2>Life of a request</h2>
+  <p class="section-intro">What happens between clicking <em>Request</em> and pressing <em>Play</em>. Tested end-to-end with <em>Night of the Living Dead</em> (1968, public domain).</p>
+  <ol class="steps">
+    <li><div><h3>You request a title <span class="tag req">Seerr</span></h3><p>Search in Seerr (TMDB data). You're the admin, so the request is approved automatically.</p></div></li>
+    <li><div><h3>Seerr hands it to the right manager <span class="tag req">Radarr / Sonarr</span></h3><p>Movies go to Radarr, series to Sonarr (anime is detected and gets series type <code>anime</code>). Quality profile HD-1080p; library folder chosen per type.</p></div></li>
+    <li><div><h3>The manager asks Prowlarr for releases <span class="tag req">Prowlarr</span></h3><p>Radarr/Sonarr query the indexers Prowlarr synced to them (Torznab). Prowlarr fans the search out to every indexer at once.</p></div></li>
+    <li><div><h3>Searches leave through the VPN <span class="tag vpn">gluetun :8888</span></h3><p>The ISP blocks most torrent sites, so Prowlarr's global proxy is gluetun's HTTP proxy. Cloudflare-protected sites go through FlareSolverr, which also lives in the VPN container.</p></div></li>
+    <li><div><h3>Best release is grabbed <span class="tag vpn">qBittorrent</span></h3><p>The manager scores results (quality, size, seeders, custom formats) and sends the winner to qBittorrent with a category: <code>movies</code> or <code>tv</code>.</p></div></li>
+    <li><div><h3>Download over the tunnel <span class="tag data">/data/torrents</span></h3><p>qBittorrent is bound to <code>tun0</code>; peers only ever see the Surfshark IP. Files land in <code>/data/torrents/&lt;category&gt;</code>. Seeding stops at ratio 1.0.</p></div></li>
+    <li><div><h3>Import, rename, file it <span class="tag data">/data/media</span></h3><p>When complete, the manager copies the file into the library with a clean name, e.g. <code>Night of the Living Dead (1968)/… Bluray-1080p.mkv</code>, plus any subtitle files. Bazarr then fetches English subtitles if none are included and saves them as <code>.en.srt</code> next to the video.</p></div></li>
+    <li><div><h3>Jellyfin picks it up <span class="tag watch">Jellyfin</span></h3><p>The manager tells Jellyfin to refresh the library; Jellyfin fetches metadata and artwork. Seerr's periodic scan then marks the request <strong>Available</strong>.</p></div></li>
+    <li><div><h3>You press play <span class="tag watch">any device</span></h3><p>Stream from <code>localhost:8096</code> on this PC or <code>192.168.0.102:8096</code> from the Jellyfin app on a phone or TV on the same Wi-Fi.</p></div></li>
+  </ol>
+</section>
+
+<!-- ============================ NETWORK ============================ -->
+<section id="network">
+  <h2>Network &amp; VPN topology</h2>
+  <p class="section-intro">All containers share one Docker bridge network and find each other by <strong>container name</strong> (Docker's built-in DNS). Three of them share gluetun's network namespace, so their only route to the internet is the WireGuard tunnel.</p>
+
+  <div class="net-row">
+    <div class="layer">
+      <p class="layer-title">Windows 11 host</p>
+      <p class="layer-sub">Browser uses <code>localhost:&lt;port&gt;</code>; LAN devices use <code>192.168.0.102:&lt;port&gt;</code>. Ports are published by Docker Desktop.</p>
+      <div class="layer inner">
+        <p class="layer-title">Docker Desktop (WSL2) · network <code>mediaserver_default</code> · 172.18.0.0/16</p>
+        <p class="layer-sub">Apps talk to each other as <code>http://radarr:7878</code>, <code>http://jellyfin:8096</code>… never <code>localhost</code>.</p>
+        <div class="pods">
+          <div class="pod"><b>seerr</b><span class="port">:5055</span><small>requests</small></div>
+          <div class="pod"><b>jellyfin</b><span class="port">:8096</span><small>media server</small></div>
+          <div class="pod"><b>radarr</b><span class="port">:7878</span><small>movies</small></div>
+          <div class="pod"><b>sonarr</b><span class="port">:8989</span><small>TV + anime</small></div>
+          <div class="pod"><b>prowlarr</b><span class="port">:9696</span><small>indexers · proxy → gluetun:8888</small></div>
+          <div class="pod"><b>bazarr</b><span class="port">:6767</span><small>English subtitles</small></div>
+        </div>
+        <div class="layer vpnzone" style="margin-top:12px">
+          <p class="layer-title">gluetun · shared network namespace</p>
+          <p class="layer-sub">Reached as <code>gluetun:&lt;port&gt;</code>. Firewall allows only the tunnel: kill switch verified (VPN stopped → qBittorrent had no internet).</p>
+          <div class="pods">
+            <div class="pod"><b>qbittorrent</b><span class="port">gluetun:8080</span><small>bound to tun0</small></div>
+            <div class="pod"><b>flaresolverr</b><span class="port">gluetun:8191</span><small>Cloudflare challenges</small></div>
+            <div class="pod"><b>HTTP proxy</b><span class="port">gluetun:8888</span><small>internal only, for Prowlarr</small></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tunnel" aria-label="Traffic path">
+      <div class="hop"><b>gluetun tun0</b>WireGuard, Surfshark</div>
+      <div class="arrow">▼</div>
+      <div class="hop"><b>Surfshark exit</b>Amsterdam, NL · e.g. 81.19.208.86</div>
+      <div class="arrow">▼</div>
+      <div class="hop"><b>Internet</b>indexers · torrent peers</div>
+      <div class="hop blocked" style="margin-top:12px"><b>Not via VPN</b>Your home IP (ACT, India) is used only by apps outside gluetun: Jellyfin/Seerr metadata (TMDB), Radarr/Sonarr updates. ACT blocks many torrent sites, which is why Prowlarr goes through the proxy.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ STORAGE ============================ -->
+<section id="storage">
+  <h2>Storage layout</h2>
+  <p class="section-intro">One host folder is mounted as <code>/data</code> in every container that touches files, so a path means the same thing everywhere. Mismatched paths are the most common reason imports fail.</p>
+  <div class="grid-2">
+    <div class="card">
+      <h3>C:\Users\Bhanu\projects\mediaserver\</h3>
+<div class="tree">├── docker-compose.yml   <span class="cm"># the whole stack</span>
+├── .env                 <span class="cm"># secrets: VPN key, passwords</span>
+├── SETUP.md             <span class="cm"># setup log &amp; how-tos</span>
+├── config\              <span class="cm"># each app's settings (back up!)</span>
+└── data\                <span class="cm"># = /data in containers</span>
+    ├── torrents\        <span class="cm"># qBittorrent writes here</span>
+    │   ├── <span class="dl">movies\</span>
+    │   └── <span class="dl">tv\</span>
+    └── media\           <span class="cm"># Jellyfin reads here</span>
+        ├── <span class="lib">movies\</span>       <span class="cm"># Radarr → "Movies"</span>
+        └── <span class="lib">tv\</span>           <span class="cm"># Sonarr → "Shows"</span></div>
+    </div>
+    <div class="card">
+      <h3>Why files are copied, not moved</h3>
+      <p style="color:var(--muted);margin-top:0">Normally the *arr apps hardlink: the same file appears in <code>torrents/</code> (still seeding) and <code>media/</code> without using extra space. Docker Desktop's Windows bind mounts can't create hardlinks, so imports <strong>copy</strong> instead.</p>
+      <p style="color:var(--muted)">Effect: while a torrent seeds, it uses double the space. When seeding hits ratio 1.0, qBittorrent stops it and the *arr removes the torrent copy (<em>Remove Completed</em> is on).</p>
+      <p style="color:var(--muted);margin-bottom:0">If disk space or speed becomes a problem, move <code>data\</code> into the WSL2 filesystem, where hardlinks work.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ SERVICES ============================ -->
+<section id="services">
+  <h2>Services</h2>
+  <p class="section-intro">Defined in <code>docker-compose.yml</code>; all restart automatically (<code>unless-stopped</code>).</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Service</th><th>Image</th><th>URL</th><th>Role</th><th>Login</th></tr></thead>
+      <tbody>
+        <tr><td><b>Seerr</b></td><td><code>ghcr.io/seerr-team/seerr</code></td><td><code>:5055</code></td><td>Search &amp; request (successor of Jellyseerr)</td><td>Jellyfin account</td></tr>
+        <tr><td><b>Jellyfin</b></td><td><code>linuxserver/jellyfin</code></td><td><code>:8096</code></td><td>Library &amp; streaming</td><td>Jellyfin account</td></tr>
+        <tr><td><b>Radarr</b></td><td><code>linuxserver/radarr</code></td><td><code>:7878</code></td><td>Movies: pick, grab, import, rename</td><td><code>ARR_USERNAME</code></td></tr>
+        <tr><td><b>Sonarr</b></td><td><code>linuxserver/sonarr</code></td><td><code>:8989</code></td><td>TV &amp; anime</td><td><code>ARR_USERNAME</code></td></tr>
+        <tr><td><b>Prowlarr</b></td><td><code>linuxserver/prowlarr</code></td><td><code>:9696</code></td><td>Indexer manager, syncs to the *arrs</td><td><code>ARR_USERNAME</code></td></tr>
+        <tr><td><b>qBittorrent</b></td><td><code>linuxserver/qbittorrent</code></td><td><code>:8080</code></td><td>Torrent client (inside gluetun)</td><td><code>admin</code> / <code>QBIT_PASSWORD</code></td></tr>
+        <tr><td><b>FlareSolverr</b></td><td><code>flaresolverr/flaresolverr</code></td><td><code>:8191</code></td><td>Solves Cloudflare for Prowlarr (inside gluetun)</td><td>none (internal)</td></tr>
+        <tr><td><b>gluetun</b></td><td><code>qmcgaw/gluetun:v3</code></td><td>none</td><td>Surfshark WireGuard, kill switch, HTTP proxy</td><td>none</td></tr>
+        <tr><td><b>Bazarr</b></td><td><code>linuxserver/bazarr</code></td><td><code>:6767</code></td><td>English subtitles for everything in Radarr &amp; Sonarr</td><td><code>ARR_USERNAME</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 style="margin-top:24px">Indexers</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Indexer</th><th>Radarr</th><th>Sonarr</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>YTS</td><td>✓</td><td>–</td><td>small movie encodes</td></tr>
+        <tr><td>1337x</td><td>✓</td><td>✓</td><td>via FlareSolverr</td></tr>
+        <tr><td>Knaben</td><td>✓</td><td>✓</td><td>meta-search over many sites</td></tr>
+        <tr><td>TorrentDownload</td><td>✓</td><td>✓</td><td></td></tr>
+        <tr><td>Nyaa.si</td><td>✓</td><td>✓</td><td>anime</td></tr>
+        <tr><td>The Pirate Bay</td><td>–</td><td>✓</td><td>Radarr rejects it (no movie RSS)</td></tr>
+        <tr><td>LimeTorrents</td><td>–</td><td>✓</td><td>same RSS quirk</td></tr>
+        <tr><td>EZTV</td><td>–</td><td>✓</td><td>eztv.tf mirror (main site 451s NL IPs)</td></tr>
+        <tr><td>SubsPlease</td><td>–</td><td>✓</td><td>anime</td></tr>
+        <tr><td>Private trackers</td><td colspan="2">sync automatically once added in Prowlarr</td><td>add with your API key / passkey</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ============================ SECURITY ============================ -->
+<section id="security">
+  <h2>Security &amp; privacy</h2>
+  <p class="section-intro">What protects you, and how it was verified.</p>
+  <div class="checks">
+    <div class="check"><b><span class="ok">✓</span> IP never exposed to peers</b><p>qBittorrent's public IP is Surfshark's (Amsterdam), not the home IP. Checked from inside the container.</p></div>
+    <div class="check"><b><span class="ok">✓</span> Kill switch</b><p>Stopping gluetun left qBittorrent with no network at all, so nothing can leak if the tunnel drops.</p></div>
+    <div class="check"><b><span class="ok">✓</span> Double bind</b><p>qBittorrent is also locked to interface <code>tun0</code>, so it can't use another interface even if misconfigured.</p></div>
+    <div class="check"><b><span class="ok">✓</span> Every UI has a login</b><p>Forms login on the *arrs, qBittorrent password, Jellyfin accounts for Jellyfin &amp; Seerr.</p></div>
+    <div class="check"><b><span class="ok">✓</span> Apps use API keys</b><p>Service-to-service calls use per-app API keys, so changing a login doesn't break the connections.</p></div>
+    <div class="check"><b><span class="ok">✓</span> Secrets in one file</b><p><code>.env</code> holds the WireGuard key and passwords. Never share or commit it.</p></div>
+  </div>
+  <p class="caption">Surfshark has no port forwarding, so qBittorrent shows "firewalled". Downloads work fine; you're just less connectable on private trackers (slower ratio building).</p>
+</section>
+
+<!-- ============================ LESSONS ============================ -->
+<section id="lessons">
+  <h2>Lessons learned during setup</h2>
+  <p class="section-intro">Problems hit while building this, and how each was fixed. Useful if something breaks later.</p>
+  <div class="lessons">
+    <div class="lesson"><h3>“localhost” inside a container is the container</h3><p>Seerr couldn't reach Jellyfin at <code>localhost:8096</code>.</p><p class="fix">Fix: use container names (<code>jellyfin</code>, <code>radarr</code>, <code>gluetun</code>) in app settings.</p></div>
+    <div class="lesson"><h3>ISP blocks torrent sites</h3><p>ACT broke SSL handshakes to EZTV, Nyaa, 1337x and others.</p><p class="fix">Fix: Prowlarr's global proxy → <code>gluetun:8888</code>; FlareSolverr moved into gluetun.</p></div>
+    <div class="lesson"><h3>Jellyseerr can't log in to Jellyfin 12</h3><p>Jellyseerr 2.7.3 is deprecated; Jellyfin rejected its login (<code>request.App</code> null).</p><p class="fix">Fix: replaced with its successor, Seerr.</p></div>
+    <div class="lesson"><h3>qBittorrent saves settings lazily</h3><p>UI changes were lost when the container was recreated.</p><p class="fix">Fix: after changing settings, <code>docker restart qbittorrent</code> (graceful stop writes the config).</p></div>
+    <div class="lesson"><h3>Five wrong logins = 1-hour ban</h3><p>qBittorrent banned the host IP (HTTP 403) after failed logins; Radarr/Sonarr broke when the password changed only in the UI.</p><p class="fix">Fix: <code>.env</code> is the source of truth; restart clears bans.</p></div>
+    <div class="lesson"><h3>gluetun restart orphans its dependents</h3><p>Containers sharing gluetun's namespace lose networking if gluetun is recreated.</p><p class="fix">Fix: <code>docker compose up -d --force-recreate qbittorrent flaresolverr</code>.</p></div>
+    <div class="lesson"><h3>“No results in configured categories”</h3><p>Radarr refuses indexers whose recent-uploads feed has no movies (TPB, LimeTorrents).</p><p class="fix">Expected. They still serve Sonarr; Knaben covers them for movies.</p></div>
+    <div class="lesson"><h3>A new library isn't scanned automatically</h3><p>The test movie was imported before its Jellyfin library existed.</p><p class="fix">Fix: one manual scan; after that, *arr → Jellyfin "Update Library" handles it.</p></div>
+  </div>
+</section>
+
+<!-- ============================ OPERATIONS ============================ -->
+<section id="ops">
+  <h2>Operations cheat sheet</h2>
+  <p class="section-intro">Run from <code>C:\Users\Bhanu\projects\mediaserver</code>.</p>
+  <div class="grid-2">
+    <div class="card"><h3>Start / stop / status</h3>
+<pre><code>docker compose up -d
+docker compose down
+docker compose ps</code></pre></div>
+    <div class="card"><h3>Update everything</h3>
+<pre><code>docker compose pull
+docker compose up -d</code></pre></div>
+    <div class="card"><h3>Check the VPN</h3>
+<pre><code>docker logs gluetun --tail 20
+docker exec qbittorrent curl -s https://ipinfo.io/ip</code></pre></div>
+    <div class="card"><h3>After gluetun restarts</h3>
+<pre><code>docker compose up -d --force-recreate qbittorrent flaresolverr</code></pre></div>
+    <div class="card"><h3>qBittorrent locked out (403)</h3>
+<pre><code>docker restart qbittorrent</code></pre></div>
+    <div class="card"><h3>Back up settings</h3>
+<pre><code>Compress-Archive config, .env, docker-compose.yml backup.zip</code></pre></div>
+  </div>
+</section>
+
+<footer>
+  Built 2026-11-19 → 2026-11-20 · Windows 11 · Docker Desktop · details in <code>SETUP.md</code>. Only download content you have the right to.
+</footer>
+</main>
+
+<script>
+  (function () {
+    var root = document.documentElement, btn = document.getElementById('themeToggle'), saved = null;
+    try { saved = localStorage.getItem('theme'); } catch (e) {}
+    if (saved === 'light' || saved === 'dark') root.setAttribute('data-theme', saved);
+    function current() {
+      var t = root.getAttribute('data-theme');
+      if (t) return t;
+      return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    function label() { btn.textContent = current() === 'dark' ? 'Light theme' : 'Dark theme'; }
+    btn.addEventListener('click', function () {
+      var next = current() === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      try { localStorage.setItem('theme', next); } catch (e) {}
+      label();
+    });
+    label();
+  })();
+</script>
+</body>
+</html>

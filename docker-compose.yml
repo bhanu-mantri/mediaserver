@@ -1,0 +1,150 @@
+# Media server stack: Jellyfin + Jellyseerr + *arr + qBittorrent behind Surfshark (Gluetun)
+# All app containers share ./data mounted at /data so paths are identical everywhere.
+
+name: mediaserver
+
+x-common-env: &common-env
+  PUID: ${PUID}
+  PGID: ${PGID}
+  TZ: ${TZ}
+
+services:
+  # ---------- VPN (qBittorrent's only network path) ----------
+  gluetun:
+    image: qmcgaw/gluetun:v3
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      TZ: ${TZ}
+      VPN_SERVICE_PROVIDER: surfshark
+      VPN_TYPE: ${VPN_TYPE}
+      # WireGuard (VPN_TYPE=wireguard)
+      WIREGUARD_PRIVATE_KEY: ${WIREGUARD_PRIVATE_KEY}
+      WIREGUARD_ADDRESSES: ${WIREGUARD_ADDRESSES}
+      # OpenVPN (VPN_TYPE=openvpn) - Surfshark *service* credentials, not your login
+      OPENVPN_USER: ${OPENVPN_USER}
+      OPENVPN_PASSWORD: ${OPENVPN_PASSWORD}
+      SERVER_COUNTRIES: ${VPN_SERVER_COUNTRIES}
+      # HTTP proxy for Prowlarr indexers blocked by the ISP (gluetun:8888, internal only)
+      HTTPPROXY: "on"
+    volumes:
+      - ./config/gluetun:/gluetun
+    ports:
+      - 8080:8080 # qBittorrent Web UI (served through the VPN container)
+      - 8191:8191 # FlareSolverr (served through the VPN container)
+    restart: unless-stopped
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    network_mode: service:gluetun # kill switch: no VPN = no traffic
+    environment:
+      <<: *common-env
+      WEBUI_PORT: 8080
+    volumes:
+      - ./config/qbittorrent:/config
+      - ./data:/data
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------- Indexers ----------
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    environment: *common-env
+    volumes:
+      - ./config/prowlarr:/config
+    ports:
+      - 9696:9696
+    restart: unless-stopped
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    network_mode: service:gluetun # solves Cloudflare from the VPN IP (ISP blocks some sites)
+    environment:
+      TZ: ${TZ}
+      LOG_LEVEL: info
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------- Library managers ----------
+  radarr: # movies
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    environment: *common-env
+    volumes:
+      - ./config/radarr:/config
+      - ./data:/data
+    ports:
+      - 7878:7878
+    restart: unless-stopped
+
+  sonarr: # TV shows + anime
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    environment: *common-env
+    volumes:
+      - ./config/sonarr:/config
+      - ./data:/data
+    ports:
+      - 8989:8989
+    restart: unless-stopped
+
+  whisparr: # adult (v3 = Radarr-based: movies + scenes)
+    image: ghcr.io/hotio/whisparr:v3
+    container_name: whisparr
+    environment:
+      <<: *common-env
+      UMASK: "002"
+    volumes:
+      - ./config/whisparr:/config
+      - ./data:/data
+    ports:
+      - 6969:6969
+    restart: unless-stopped
+
+  bazarr: # subtitles
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    environment: *common-env
+    volumes:
+      - ./config/bazarr:/config
+      - ./data:/data
+    ports:
+      - 6767:6767
+    restart: unless-stopped
+
+  # ---------- Watch & request ----------
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    environment: *common-env
+    volumes:
+      - ./config/jellyfin:/config
+      - ./data:/data
+    ports:
+      - 8096:8096
+    restart: unless-stopped
+
+  seerr: # successor of Jellyseerr/Overseerr (Jellyseerr 2.7.x can't log in to Jellyfin 12)
+    image: ghcr.io/seerr-team/seerr:latest
+    container_name: seerr
+    init: true
+    environment:
+      TZ: ${TZ}
+      LOG_LEVEL: info
+    volumes:
+      - ./config/seerr:/app/config
+    ports:
+      - 5055:5055
+    depends_on:
+      - jellyfin
+    restart: unless-stopped
